@@ -120,7 +120,7 @@ class PodcastDownloader:
             # Use ffmpeg without pydub as fallback
             cmd = [
                 'ffmpeg', '-y', '-i', input_path,
-                '-ar', '16000', '-ac', '1',
+                '-ar', '12000', '-ac', '1',
                 str(output_path)
             ]
             result = subprocess.run(cmd, capture_output=True, text=True)
