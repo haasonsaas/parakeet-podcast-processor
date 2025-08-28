@@ -1,7 +1,7 @@
 feeds:
   # High-value business/investment podcasts
   - name: "Lenny's Podcast"
-    url: "https://feeds.simplecast.com/UZ12E8Qw"
+    url: "https://www.lennysnewsletter.com/feed"
     category: "product"
   
   - name: "Acquired"
@@ -13,7 +13,7 @@ feeds:
     category: "investing"
     
   - name: "The Twenty Minute VC"
-    url: "https://feeds.simplecast.com/6ea96d8b"
+    url: "https://thetwentyminutevc.libsyn.com/rss"
     category: "venture"
     
   - name: "a16z Podcast"
@@ -21,12 +21,12 @@ feeds:
     category: "venture"
     
   - name: "SaaStr Podcast"
-    url: "https://www.saastr.com/feed/podcast/"
+    url: "https://saastr.libsyn.com/rss"
     category: "saas"
     
   # AI/Tech focused
   - name: "The AI Breakdown"
-    url: "https://feeds.simplecast.com/dIdTXIB4"
+    url: "https://feeds.megaphone.fm/NLWLLC5739737478"
     category: "ai"
     
   - name: "Latent Space"
@@ -34,7 +34,11 @@ feeds:
     category: "ai"
     
   - name: "Masters in Business"
-    url: "https://feeds.bloomberg.fm/BLM5547189830"
+    url: "https://feeds.bloomberg.fm/BLM8864403288"
+    category: "business"
+
+  - name: "Odd Lots"
+    url: "https://www.omnycontent.com/d/playlist/e73c998e-6e60-432f-8610-ae210140c5b1/8a94442e-5a74-4fa2-8b8d-ae27003a8d6b/982f5071-765c-403d-969d-ae27003a8d83/podcast.rss"
     category: "business"
 
 # Global settings
