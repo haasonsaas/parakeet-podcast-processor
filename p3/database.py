@@ -41,7 +41,10 @@ class P3Database:
                 url VARCHAR UNIQUE NOT NULL,
                 file_path VARCHAR,
                 duration_seconds INTEGER,
-                status VARCHAR DEFAULT 'downloaded', -- downloaded, transcribed, processed
+                status VARCHAR DEFAULT 'downloaded', -- downloaded, transcribed, processed, failed
+                error_count INTEGER DEFAULT 0,
+                last_error TEXT,
+                error_timestamp TIMESTAMP,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """)
@@ -239,6 +242,99 @@ class P3Database:
                 "podcast_title": row[10]
             })
         return summaries
+
+    def mark_episode_as_processed(self, episode_id: int, reason: str = None):
+        """Mark an episode as processed, typically used for error recovery."""
+        if reason:
+            self.conn.execute("""
+                UPDATE episodes 
+                SET status = 'processed', 
+                    last_error = ?
+                WHERE id = ?
+            """, (f"Manually marked as processed: {reason}", episode_id))
+        else:
+            self.conn.execute(
+                "UPDATE episodes SET status = 'processed' WHERE id = ?",
+                (episode_id,)
+            )
+    
+    def record_episode_error(self, episode_id: int, error: str):
+        """Record an error for an episode."""
+        self.conn.execute("""
+            UPDATE episodes 
+            SET error_count = error_count + 1,
+                last_error = ?,
+                error_timestamp = CURRENT_TIMESTAMP,
+                status = 'failed'
+            WHERE id = ?
+        """, (error, episode_id))
+    
+    def reset_episode_errors(self, episode_id: int):
+        """Reset error count and status for retry."""
+        self.conn.execute("""
+            UPDATE episodes 
+            SET error_count = 0,
+                last_error = NULL,
+                error_timestamp = NULL,
+                status = 'downloaded'
+            WHERE id = ?
+        """, (episode_id,))
+    
+    def get_error_episodes(self) -> List[Dict[str, Any]]:
+        """Get all episodes with errors."""
+        results = self.conn.execute("""
+            SELECT e.*, p.title as podcast_title 
+            FROM episodes e 
+            JOIN podcasts p ON e.podcast_id = p.id 
+            WHERE e.error_count > 0 OR e.status = 'failed'
+            ORDER BY e.error_timestamp DESC
+        """).fetchall()
+        
+        episodes = []
+        for row in results:
+            episodes.append({
+                "id": row[0],
+                "podcast_id": row[1],
+                "title": row[2],
+                "date": row[3],
+                "url": row[4],
+                "file_path": row[5],
+                "duration_seconds": row[6],
+                "status": row[7],
+                "error_count": row[8],
+                "last_error": row[9],
+                "error_timestamp": row[10],
+                "created_at": row[11],
+                "podcast_title": row[12]
+            })
+        return episodes
+    
+    def get_episode_by_id(self, episode_id: int) -> Optional[Dict[str, Any]]:
+        """Get episode by ID."""
+        result = self.conn.execute("""
+            SELECT e.*, p.title as podcast_title 
+            FROM episodes e 
+            JOIN podcasts p ON e.podcast_id = p.id 
+            WHERE e.id = ?
+        """, (episode_id,)).fetchone()
+        
+        if result:
+            return {
+                "id": result[0],
+                "podcast_id": result[1],
+                "title": result[2],
+                "date": result[3],
+                "url": result[4],
+                "file_path": result[5],
+                "duration_seconds": result[6],
+                "status": result[7],
+                "error_count": result[8],
+                "last_error": result[9],
+                "error_timestamp": result[10],
+                "created_at": result[11],
+                "podcast_title": result[12]
+            }
+        return None
 
     def close(self):
         """Close database connection."""

@@ -145,37 +145,67 @@ Transcript:
             print(f"Ollama cleaning failed: {e}")
             return text
 
-    def generate_summary(self, episode_id: int) -> Dict[str, Any]:
+    def generate_summary(self, episode_id: int, skip_errors: bool = False) -> Dict[str, Any]:
         """Generate structured summary of an episode."""
-        # Get transcript segments
-        segments = self.db.get_transcripts_for_episode(episode_id)
-        full_text = "\n".join(segment['text'] for segment in segments)
-        
-        if not full_text.strip():
+        # Get episode to check status
+        episode = self.db.get_episode_by_id(episode_id)
+        if not episode:
+            print(f"Episode {episode_id} not found")
             return None
         
-        # Clean the transcript first
-        cleaned_text = self.clean_transcript(full_text)
+        # Skip if already processed
+        if episode['status'] == 'processed':
+            print(f"Episode {episode_id} already processed")
+            return None
         
-        # Generate structured summary using LLM
-        summary_data = self._generate_structured_summary(cleaned_text)
+        # Skip if has errors and skip_errors is True
+        if skip_errors and episode.get('error_count', 0) > 0:
+            print(f"Skipping episode {episode_id} due to previous errors")
+            return None
         
-        if summary_data:
-            # Store in database
-            self.db.add_summary(
-                episode_id=episode_id,
-                key_topics=summary_data.get('key_topics', []),
-                themes=summary_data.get('themes', []),
-                quotes=summary_data.get('quotes', []),
-                startups=summary_data.get('startups', []),
-                full_summary=summary_data.get('summary', ''),
-                digest_date=datetime.now()
-            )
+        try:
+            # Get transcript segments
+            segments = self.db.get_transcripts_for_episode(episode_id)
+            full_text = "\n".join(segment['text'] for segment in segments)
             
-            # Update episode status
-            self.db.update_episode_status(episode_id, 'processed')
-        
-        return summary_data
+            if not full_text.strip():
+                error_msg = "No transcript text found for episode"
+                self.db.record_episode_error(episode_id, error_msg)
+                return None
+            
+            # Clean the transcript first
+            cleaned_text = self.clean_transcript(full_text)
+            
+            # Generate structured summary using LLM
+            summary_data = self._generate_structured_summary(cleaned_text)
+            
+            if summary_data:
+                # Store in database
+                self.db.add_summary(
+                    episode_id=episode_id,
+                    key_topics=summary_data.get('key_topics', []),
+                    themes=summary_data.get('themes', []),
+                    quotes=summary_data.get('quotes', []),
+                    startups=summary_data.get('startups', []),
+                    full_summary=summary_data.get('summary', ''),
+                    digest_date=datetime.now()
+                )
+                
+                # Update episode status
+                self.db.update_episode_status(episode_id, 'processed')
+                print(f"✓ Processed: {episode['title']}")
+            else:
+                error_msg = "Failed to generate summary data"
+                self.db.record_episode_error(episode_id, error_msg)
+                print(f"Failed to generate summary for episode {episode_id}")
+            
+            return summary_data
+            
+        except Exception as e:
+            error_msg = f"Summary generation failed: {str(e)}"
+            print(f"Error: {error_msg}")
+            self.db.record_episode_error(episode_id, error_msg)
+            return None
 
     def _generate_structured_summary(self, text: str) -> Optional[Dict[str, Any]]:
         """Generate structured summary using LLM."""

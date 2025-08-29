@@ -106,47 +106,80 @@ class AudioTranscriber:
             print("Falling back to Whisper")
             return self.transcribe_with_whisper(audio_path)
 
-    def transcribe_episode(self, episode_id: int) -> bool:
+    def transcribe_episode(self, episode_id: int, skip_errors: bool = False) -> bool:
         """Transcribe a single episode and store results."""
-        episodes = self.db.get_episodes_by_status('downloaded')
-        episode = next((ep for ep in episodes if ep['id'] == episode_id), None)
+        # Get episode from database directly
+        episode = self.db.get_episode_by_id(episode_id)
         
         if not episode:
-            print(f"Episode {episode_id} not found or already processed")
+            print(f"Episode {episode_id} not found")
+            return False
+        
+        # Skip if already transcribed or processed
+        if episode['status'] in ['transcribed', 'processed']:
+            print(f"Episode {episode_id} already transcribed/processed")
+            return True
+        
+        # Skip if has errors and skip_errors is True
+        if skip_errors and episode.get('error_count', 0) > 0:
+            print(f"Skipping episode {episode_id} due to previous errors")
             return False
 
         if not episode['file_path'] or not Path(episode['file_path']).exists():
-            print(f"Audio file not found: {episode.get('file_path')}")
+            error_msg = f"Audio file not found: {episode.get('file_path')}"
+            print(f"Error: {error_msg}")
+            self.db.record_episode_error(episode_id, error_msg)
             return False
 
         print(f"Transcribing: {episode['title']}")
         
-        # Choose transcription method
-        if self.use_parakeet:
-            result = self.transcribe_with_parakeet(episode['file_path'])
-        else:
-            result = self.transcribe_with_whisper(episode['file_path'])
-        
-        if not result:
+        try:
+            # Choose transcription method
+            if self.use_parakeet:
+                result = self.transcribe_with_parakeet(episode['file_path'])
+            else:
+                result = self.transcribe_with_whisper(episode['file_path'])
+            
+            if not result:
+                error_msg = "Transcription returned no results"
+                self.db.record_episode_error(episode_id, error_msg)
+                return False
+
+            # Store transcript segments in database
+            self.db.add_transcript_segments(episode_id, result['segments'])
+            
+            # Update episode status
+            self.db.update_episode_status(episode_id, 'transcribed')
+            
+            print(f"✓ Transcribed: {episode['title']}")
+            return True
+            
+        except Exception as e:
+            error_msg = f"Transcription failed: {str(e)}"
+            print(f"Error: {error_msg}")
+            self.db.record_episode_error(episode_id, error_msg)
             return False
 
-        # Store transcript segments in database
-        self.db.add_transcript_segments(episode_id, result['segments'])
-        
-        # Update episode status
-        self.db.update_episode_status(episode_id, 'transcribed')
-        
-        print(f"✓ Transcribed: {episode['title']}")
-        return True
-
-    def transcribe_all_pending(self) -> int:
+    def transcribe_all_pending(self, skip_errors: bool = False, max_retries: int = 3) -> int:
         """Transcribe all episodes with 'downloaded' status."""
         episodes = self.db.get_episodes_by_status('downloaded')
         transcribed_count = 0
+        failed_count = 0
         
         for episode in episodes:
-            if self.transcribe_episode(episode['id']):
+            # Skip episodes that have exceeded max retries
+            if episode.get('error_count', 0) >= max_retries:
+                print(f"Skipping {episode['title']} - exceeded max retries ({max_retries})")
+                continue
+                
+            if self.transcribe_episode(episode['id'], skip_errors=skip_errors):
                 transcribed_count += 1
+            else:
+                failed_count += 1
+        
+        if failed_count > 0:
+            print(f"\n⚠ {failed_count} episodes failed transcription")
+            print("Use 'p3 errors' to see details or 'p3 retry' to retry failed episodes")
             
         return transcribed_count
 

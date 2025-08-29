@@ -92,8 +92,10 @@ def fetch(ctx, max_episodes):
 @main.command()
 @click.option('--model', default=None, help='Whisper model to use')
 @click.option('--episode-id', type=int, help='Transcribe specific episode')
+@click.option('--skip-errors', is_flag=True, help='Skip episodes with previous errors')
+@click.option('--max-retries', default=3, help='Maximum retry attempts before skipping')
 @click.pass_context
-def transcribe(ctx, model, episode_id):
+def transcribe(ctx, model, episode_id, skip_errors, max_retries):
     """Transcribe downloaded audio files."""
     config = load_config(ctx.obj['config_path'])
     db = ctx.obj['db']
@@ -111,23 +113,21 @@ def transcribe(ctx, model, episode_id):
     
     if episode_id:
         console.print(f"[blue]Transcribing episode {episode_id}...[/blue]")
-        success = transcriber.transcribe_episode(episode_id)
+        success = transcriber.transcribe_episode(episode_id, skip_errors=skip_errors)
         if success:
             console.print(f"[green]✓ Episode {episode_id} transcribed[/green]")
         else:
             console.print(f"[red]✗ Failed to transcribe episode {episode_id}[/red]")
+            console.print("[dim]Use 'p3 errors --show-all' to see error details[/dim]")
     else:
         console.print("[blue]Transcribing all pending episodes...[/blue]")
-        episodes = db.get_episodes_by_status('downloaded')
+        if skip_errors:
+            console.print("[yellow]Skipping episodes with previous errors[/yellow]")
         
-        if not episodes:
-            console.print("[yellow]No episodes to transcribe[/yellow]")
-            return
-        
-        transcribed = 0
-        for episode in track(episodes, description="Transcribing..."):
-            if transcriber.transcribe_episode(episode['id']):
-                transcribed += 1
+        transcribed = transcriber.transcribe_all_pending(
+            skip_errors=skip_errors,
+            max_retries=max_retries
+        )
         
         console.print(f"[green]Transcribed {transcribed} episodes[/green]")
 
@@ -136,8 +136,10 @@ def transcribe(ctx, model, episode_id):
 @click.option('--provider', default=None, help='LLM provider (openai, anthropic, ollama)')
 @click.option('--model', default=None, help='LLM model to use')
 @click.option('--episode-id', type=int, help='Process specific episode')
+@click.option('--skip-errors', is_flag=True, help='Skip episodes with previous errors')
+@click.option('--max-retries', default=3, help='Maximum retry attempts before skipping')
 @click.pass_context
-def digest(ctx, provider, model, episode_id):
+def digest(ctx, provider, model, episode_id, skip_errors, max_retries):
     """Generate structured summaries from transcripts."""
     config = load_config(ctx.obj['config_path'])
     db = ctx.obj['db']
@@ -155,15 +157,41 @@ def digest(ctx, provider, model, episode_id):
     
     if episode_id:
         console.print(f"[blue]Processing episode {episode_id}...[/blue]")
-        result = cleaner.generate_summary(episode_id)
+        result = cleaner.generate_summary(episode_id, skip_errors=skip_errors)
         if result:
             console.print(f"[green]✓ Episode {episode_id} processed[/green]")
         else:
             console.print(f"[red]✗ Failed to process episode {episode_id}[/red]")
+            console.print("[dim]Use 'p3 errors --show-all' to see error details[/dim]")
     else:
         console.print("[blue]Processing all transcribed episodes...[/blue]")
-        processed = cleaner.process_all_transcribed()
+        if skip_errors:
+            console.print("[yellow]Skipping episodes with previous errors[/yellow]")
+        
+        # Get transcribed episodes
+        episodes = db.get_episodes_by_status('transcribed')
+        if not episodes:
+            console.print("[yellow]No episodes to process[/yellow]")
+            return
+        
+        processed = 0
+        failed = 0
+        for episode in track(episodes, description="Processing..."):
+            # Skip episodes that have exceeded max retries
+            if episode.get('error_count', 0) >= max_retries:
+                console.print(f"[dim]Skipping {episode['title'][:40]} - exceeded max retries[/dim]")
+                continue
+                
+            result = cleaner.generate_summary(episode['id'], skip_errors=skip_errors)
+            if result:
+                processed += 1
+            else:
+                failed += 1
+        
         console.print(f"[green]Processed {processed} episodes[/green]")
+        if failed > 0:
+            console.print(f"[yellow]⚠ {failed} episodes failed processing[/yellow]")
+            console.print("[dim]Use 'p3 errors' to see details or 'p3 retry' to retry failed episodes[/dim]")
 
 
 @main.command()
@@ -224,21 +252,165 @@ def status(ctx):
     db = ctx.obj['db']
     
     # Count episodes by status
-    statuses = ['downloaded', 'transcribed', 'processed']
+    statuses = ['downloaded', 'transcribed', 'processed', 'failed']
     counts = {}
     
     for status in statuses:
         episodes = db.get_episodes_by_status(status)
         counts[status] = len(episodes)
     
+    # Also get error episodes
+    error_episodes = db.get_error_episodes()
+    error_count = len(error_episodes)
+    
     table = Table(title="Episode Processing Status")
     table.add_column("Status", style="cyan")
     table.add_column("Count", style="green", justify="right")
     
     for status, count in counts.items():
-        table.add_row(status.title(), str(count))
+        style = "red" if status == "failed" else "green"
+        table.add_row(status.title(), str(count), style=style)
     
     console.print(table)
+    
+    # Show error summary if there are errors
+    if error_count > 0:
+        console.print(f"\n[yellow]⚠ {error_count} episodes have errors[/yellow]")
+        console.print("[dim]Use 'p3 errors' to see details[/dim]")
+
+
+@main.command()
+@click.option('--episode-id', type=int, help='Mark specific episode as processed')
+@click.option('--podcast', help='Mark all episodes from podcast as processed')
+@click.option('--reason', help='Reason for marking as processed')
+@click.pass_context
+def mark_processed(ctx, episode_id, podcast, reason):
+    """Mark episodes as processed (useful for error recovery)."""
+    db = ctx.obj['db']
+    
+    if episode_id:
+        # Mark specific episode
+        episode = db.get_episode_by_id(episode_id)
+        if not episode:
+            console.print(f"[red]Episode {episode_id} not found[/red]")
+            return
+        
+        db.mark_episode_as_processed(episode_id, reason)
+        console.print(f"[green]✓ Marked episode {episode_id} ({episode['title']}) as processed[/green]")
+        if reason:
+            console.print(f"  Reason: {reason}")
+    
+    elif podcast:
+        # Mark all episodes from podcast
+        # First get all episodes with errors or in failed state
+        error_episodes = db.get_error_episodes()
+        podcast_episodes = [e for e in error_episodes if podcast.lower() in e['podcast_title'].lower()]
+        
+        if not podcast_episodes:
+            console.print(f"[yellow]No error episodes found for podcast matching '{podcast}'[/yellow]")
+            return
+        
+        console.print(f"[yellow]Found {len(podcast_episodes)} error episodes for '{podcast}'[/yellow]")
+        for ep in podcast_episodes:
+            db.mark_episode_as_processed(ep['id'], reason)
+            console.print(f"  ✓ {ep['title']}")
+        
+        console.print(f"[green]Marked {len(podcast_episodes)} episodes as processed[/green]")
+    
+    else:
+        console.print("[red]Please specify --episode-id or --podcast[/red]")
+
+
+@main.command()
+@click.option('--episode-id', type=int, help='Retry specific episode')
+@click.option('--all', is_flag=True, help='Retry all failed episodes')
+@click.option('--reset-errors', is_flag=True, help='Reset error count')
+@click.pass_context
+def retry(ctx, episode_id, all, reset_errors):
+    """Retry failed episodes."""
+    db = ctx.obj['db']
+    
+    if episode_id:
+        # Retry specific episode
+        episode = db.get_episode_by_id(episode_id)
+        if not episode:
+            console.print(f"[red]Episode {episode_id} not found[/red]")
+            return
+        
+        if reset_errors:
+            db.reset_episode_errors(episode_id)
+            console.print(f"[green]✓ Reset errors for episode {episode_id}[/green]")
+        
+        db.update_episode_status(episode_id, 'downloaded')
+        console.print(f"[green]✓ Episode {episode_id} ready for retry[/green]")
+    
+    elif all:
+        # Retry all failed episodes
+        error_episodes = db.get_error_episodes()
+        
+        if not error_episodes:
+            console.print("[yellow]No failed episodes found[/yellow]")
+            return
+        
+        console.print(f"[yellow]Found {len(error_episodes)} failed episodes[/yellow]")
+        for ep in error_episodes:
+            if reset_errors:
+                db.reset_episode_errors(ep['id'])
+            db.update_episode_status(ep['id'], 'downloaded')
+            console.print(f"  ✓ Reset: {ep['title']}")
+        
+        console.print(f"[green]Reset {len(error_episodes)} episodes for retry[/green]")
+    
+    else:
+        console.print("[red]Please specify --episode-id or --all[/red]")
+
+
+@main.command()
+@click.option('--show-all', is_flag=True, help='Show all details')
+@click.pass_context
+def errors(ctx, show_all):
+    """List episodes with errors."""
+    db = ctx.obj['db']
+    
+    error_episodes = db.get_error_episodes()
+    
+    if not error_episodes:
+        console.print("[green]No episodes with errors found[/green]")
+        return
+    
+    table = Table(title=f"Episodes with Errors ({len(error_episodes)} total)")
+    table.add_column("ID", style="cyan")
+    table.add_column("Podcast", style="magenta")
+    table.add_column("Episode", style="white")
+    table.add_column("Status", style="red")
+    table.add_column("Errors", style="yellow", justify="right")
+    
+    if show_all:
+        table.add_column("Last Error", style="dim")
+        table.add_column("Timestamp", style="dim")
+    
+    for ep in error_episodes:
+        row = [
+            str(ep['id']),
+            ep['podcast_title'][:30],
+            ep['title'][:40],
+            ep['status'],
+            str(ep['error_count'])
+        ]
+        
+        if show_all:
+            error_msg = ep['last_error'] or "N/A"
+            if len(error_msg) > 50:
+                error_msg = error_msg[:47] + "..."
+            row.append(error_msg)
+            row.append(str(ep['error_timestamp'] or "N/A")[:19])
+        
+        table.add_row(*row)
+    
+    console.print(table)
+    
+    if not show_all:
+        console.print("\n[dim]Use --show-all to see error details[/dim]")
 
 
 @main.command()

@@ -50,7 +50,7 @@ settings:
   
   # Transcription
   whisper_model: "base"  # tiny, base, small, medium, large
-  parakeet_enabled: true  # Use Parakeet MLX on Apple Silicon
+  parakeet_enabled: false  # Use Parakeet MLX on Apple Silicon
   parakeet_model: "mlx-community/parakeet-tdt-0.6b-v2"
   
   # LLM cleaning
